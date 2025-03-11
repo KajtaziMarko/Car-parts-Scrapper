@@ -56,6 +56,25 @@ def select_type(driver, wait, type_data):
     type_elem = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
     type_elem.click()
 
+def input_brand(driver, wait, brand):
+    brand_input = wait.until(EC.element_to_be_clickable((By.ID, "BrandCode")))
+    brand_input.click()
+    brand_input.clear()
+    brand_input.send_keys(brand)
+
+def input_model(driver, wait, model_data):
+    formatted_model = f"{model_data["model_name"]} {model_data['model_date']}"
+    model_input = wait.until(EC.element_to_be_clickable((By.ID, "ModelCode")))
+    model_input.click()
+    model_input.clear()
+    model_input.send_keys(formatted_model)
+
+def input_type(driver, wait, type_data):
+    formatted_type = f"{type_data['name']} ({type_data['kw']} kW/{type_data['cv']} CV) {type_data['date']}"
+    type_input = wait.until(EC.element_to_be_clickable((By.ID, "TypeCode")))
+    type_input.click()
+    type_input.clear()
+    type_input.send_keys(formatted_type)
 
 def get_all_brands(driver, wait):
     load_page(driver, wait)
@@ -118,14 +137,36 @@ def get_all_types(driver, wait, brand, model):
 
 
 def click_search_and_get_url(driver, wait, brand, model, type_data):
-    select_brand(driver, wait, brand)
-    select_model(driver, wait, model["model_name"])
-    select_type(driver, wait, type_data)
-    current_url = driver.current_url
-    search_button = wait.until(EC.element_to_be_clickable((By.ID, "SubmitType")))
-    search_button.click()
-    wait.until(EC.url_changes(current_url))
-    return driver.current_url
+    # First, try to use the select functions.
+    try:
+        load_page(driver, wait)
+        select_brand(driver, wait, brand)
+        select_model(driver, wait, model["model_name"])
+        select_type(driver, wait, type_data)
+    except Exception as select_exception:
+        print("Select functions failed, trying input functions:", select_exception)
+        # If the select approach fails, try the input functions.
+        try:
+            load_page(driver, wait)
+            input_brand(driver, wait, brand)
+            input_model(driver, wait, model)
+            input_type(driver, wait, type_data)
+        except Exception as input_exception:
+            print("Input functions also failed:", input_exception)
+            print("Brand:", brand, "Model:", model, "Type:", type_data)
+            return ""
+
+    # After successfully setting the values, click the search button.
+    try:
+        current_url = driver.current_url
+        search_button = wait.until(EC.element_to_be_clickable((By.ID, "SubmitType")))
+        search_button.click()
+        wait.until(EC.url_changes(current_url))
+        return driver.current_url
+    except Exception as e:
+        print("Error clicking search or waiting for URL change:", e)
+        print("Brand:", brand, "Model:", model, "Type:", type_data)
+        return ""
 
 
 def append_to_csv(file_name, row):
@@ -157,7 +198,7 @@ def main():
 
     # Limit to the first three brands for testing
     # brands = brands[:2]
-    
+
     # Remove any existing CSV files to start fresh
     for file in ["Data/brands.csv", "Data/models.csv", "Data/types.csv"]:
         if os.path.exists(file):
@@ -187,7 +228,6 @@ def main():
             types = get_all_types(driver, wait, brand, model)
             for type_data in types:
                 # Reload the page and perform the search for each type
-                load_page(driver, wait)
                 url = click_search_and_get_url(driver, wait, brand, model, type_data)
                 type_record = {
                     "type_id": type_id_counter,
