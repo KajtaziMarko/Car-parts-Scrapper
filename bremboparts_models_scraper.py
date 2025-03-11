@@ -1,11 +1,9 @@
 import os
-import json
 import pandas as pd
-from apify_shared.utils import json_dumps
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
 
 URL = "https://www.bremboparts.com/europe/en"
 
