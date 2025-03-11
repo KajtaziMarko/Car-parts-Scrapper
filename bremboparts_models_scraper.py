@@ -76,6 +76,19 @@ def input_type(driver, wait, type_data):
     type_input.clear()
     type_input.send_keys(formatted_type)
 
+def input_and_select_brand(driver, wait, brand):
+    select_brand(driver, wait, brand)
+    select_model(driver, wait, brand)
+
+def input_and_select_model(driver, wait, model_data):
+    input_model(driver, wait, model_data)
+    select_model(driver, wait, model_data)
+
+def input_and_select_type(driver, wait, type_data):
+    input_type(driver, wait, type_data)
+    select_type(driver, wait, type_data)
+
+
 def get_all_brands(driver, wait):
     load_page(driver, wait)
     brand_input = wait.until(EC.element_to_be_clickable((By.ID, "BrandCode")))
@@ -140,9 +153,12 @@ def click_search_and_get_url(driver, wait, brand, model, type_data):
     # First, try to use the select functions.
     try:
         load_page(driver, wait)
-        select_brand(driver, wait, brand)
-        select_model(driver, wait, model["model_name"])
-        select_type(driver, wait, type_data)
+        # select_brand(driver, wait, brand)
+        input_and_select_brand(driver, wait, brand)
+        # select_model(driver, wait, model["model_name"])
+        input_and_select_model(driver, wait, model)
+        # select_type(driver, wait, type_data)
+        input_and_select_type(driver, wait, type_data)
     except Exception as select_exception:
         print("Select functions failed, trying input functions:", select_exception)
         # If the select approach fails, try the input functions.
