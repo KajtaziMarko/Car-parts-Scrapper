@@ -75,8 +75,8 @@ def input_type(driver, wait, type_data):
     type_input.send_keys(formatted_type)
 
 def input_and_select_brand(driver, wait, brand):
+    input_brand(driver, wait, brand)
     select_brand(driver, wait, brand)
-    select_model(driver, wait, brand)
 
 def input_and_select_model(driver, wait, model_data):
     input_model(driver, wait, model_data)
@@ -151,10 +151,13 @@ def click_search_and_get_url(driver, wait, brand, model, type_data):
     # First, try to use the select functions.
     try:
         load_page(driver, wait)
-        # select_brand(driver, wait, brand)
-        input_and_select_brand(driver, wait, brand)
-        # select_model(driver, wait, model["model_name"])
-        input_and_select_model(driver, wait, model)
+
+        select_brand(driver, wait, brand)
+        # input_and_select_brand(driver, wait, brand)
+
+        select_model(driver, wait, model["model_name"])
+        # input_and_select_model(driver, wait, model)
+
         # select_type(driver, wait, type_data)
         input_and_select_type(driver, wait, type_data)
     except Exception as select_exception:
@@ -210,27 +213,83 @@ def main():
     brands = get_all_brands(driver, wait)
     close_popup(driver, wait, "div.modal.link.show", 40)
 
-    # Limit to the first three brands for testing
-    # brands = brands[:2]
+    # Ensure Data folder exists; if it does, adjust checkpoint data.
+    if not os.path.exists("Data"):
+        os.makedirs("Data")
+    else:
+        if os.path.exists("Data/brands.csv"):
+            brands_csv = pd.read_csv("Data/brands.csv")
+            if not brands_csv.empty:
+                last_brand = brands_csv.iloc[-1]["brand_name"]
+                # Remove rows in models and types that belong to the last brand.
+                if os.path.exists("Data/models.csv"):
+                    models_df = pd.read_csv("Data/models.csv")
+                    # Get the last brand's id from brands.csv
+                    last_brand_row = brands_csv[brands_csv["brand_name"] == last_brand]
+                    if not last_brand_row.empty:
+                        last_brand_id = last_brand_row.iloc[-1]["brand_id"]
+                        # Find model_ids for rows that belong to the last brand.
+                        models_to_remove = models_df[models_df["brand_id"] == last_brand_id]
+                        model_ids_to_remove = models_to_remove["model_id"].tolist()
+                        # Remove these rows and update models.csv
+                        models_df = models_df[models_df["brand_id"] != last_brand_id]
+                        models_df.to_csv("Data/models.csv", index=False)
+                        # Now remove rows in types.csv whose model_id is in the removed list.
+                        if os.path.exists("Data/types.csv"):
+                            types_df = pd.read_csv("Data/types.csv")
+                            types_df = types_df[~types_df["model_id"].isin(model_ids_to_remove)]
+                            types_df.to_csv("Data/types.csv", index=False)
 
-    # Remove any existing CSV files to start fresh
-    for file in ["Data/brands.csv", "Data/models.csv", "Data/types.csv"]:
-        if os.path.exists(file):
-            os.remove(file)
+                # Remove the last brand from the csv
+                brands_csv = brands_csv[brands_csv["brand_name"] != last_brand]
+                brands_csv.to_csv("Data/brands.csv", index=False)
 
-    # Counters for unique IDs
-    model_id_counter = 1
-    type_id_counter = 1
+                # Adjust the brands list to resume from the last processed brand.
+                try:
+                    index = brands.index(last_brand)
+                    brands = brands[index:]
+                except ValueError as e:
+                    print(e)
+
+    # Initialize ID counters based on existing CSV files.
+    if os.path.exists("Data/brands.csv"):
+        brands_df = pd.read_csv("Data/brands.csv")
+        if not brands_df.empty:
+            next_brand_id = int(brands_df["brand_id"].max()) + 1
+        else:
+            next_brand_id = 1
+    else:
+        next_brand_id = 1
+
+    if os.path.exists("Data/models.csv"):
+        models_df = pd.read_csv("Data/models.csv")
+        if not models_df.empty:
+            next_model_id = int(models_df["model_id"].max()) + 1
+        else:
+            next_model_id = 1
+    else:
+        next_model_id = 1
+
+    if os.path.exists("Data/types.csv"):
+        types_df = pd.read_csv("Data/types.csv")
+        if not types_df.empty:
+            next_type_id = int(types_df["type_id"].max()) + 1
+        else:
+            next_type_id = 1
+    else:
+        next_type_id = 1
 
     # Process each brand, model, and type while saving each step immediately
-    for brand_index, brand in enumerate(brands, start=1):
-        brand_id = brand_index
+    for brand in brands:
+        brand_id = next_brand_id
+        next_brand_id += 1
         brand_record = {"brand_id": brand_id, "brand_name": brand}
         append_to_csv("Data/brands.csv", brand_record)
 
         models = get_all_models(driver, wait, brand)
         for model in models:
-            current_model_id = model_id_counter
+            current_model_id = next_model_id
+            next_model_id += 1
             model_record = {
                 "model_id": current_model_id,
                 "brand_id": brand_id,
@@ -241,10 +300,9 @@ def main():
 
             types = get_all_types(driver, wait, brand, model)
             for type_data in types:
-                # Reload the page and perform the search for each type
                 url = click_search_and_get_url(driver, wait, brand, model, type_data)
                 type_record = {
-                    "type_id": type_id_counter,
+                    "type_id": next_type_id,
                     "model_id": current_model_id,
                     "type_name": type_data["name"],
                     "kw": type_data["kw"],
@@ -253,10 +311,9 @@ def main():
                     "url": url
                 }
                 append_to_csv("Data/types.csv", type_record)
-                type_id_counter += 1
-            model_id_counter += 1
+                next_type_id += 1
 
-    print("Saved brands.csv, models.csv, and types.csv for the first three brands.")
+    print("Saved brands.csv, models.csv, and types.csv for the processed brands.")
     driver.quit()
 
 
