@@ -4,6 +4,7 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
+import time
 
 URL = "https://www.bremboparts.com/europe/en"
 
@@ -12,6 +13,7 @@ def load_page(driver, wait):
     driver.get(URL)
     # Wait until the BrandCode element is present
     wait.until(EC.presence_of_element_located((By.ID, "BrandCode")))
+    # time.sleep(2)
 
 
 def close_popup(driver, wait, section, t=10):
@@ -30,11 +32,11 @@ def select_brand(driver, wait, brand):
     brand_elem.click()
 
 
-def select_model(driver, wait, model_name):
+def select_model(driver, wait, model_data):
     model_input = wait.until(EC.element_to_be_clickable((By.ID, "ModelCode")))
     model_input.click()
     # Use a contains xpath to match the model name
-    xpath = f"//div[@class='item search-result']/span[contains(., '{model_name}')]"
+    xpath = f"//div[@class='item search-result']/span[contains(., '{model_data["model_name"]}')]"
     model_elem = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
     model_elem.click()
 
@@ -101,7 +103,8 @@ def get_all_brands(driver, wait):
 
 def get_all_models(driver, wait, brand):
     load_page(driver, wait)
-    select_brand(driver, wait, brand)
+    # select_brand(driver, wait, brand)
+    input_and_select_brand(driver, wait, brand)
     model_input = wait.until(EC.element_to_be_clickable((By.ID, "ModelCode")))
     model_input.click()
     model_container = wait.until(EC.visibility_of_element_located(
@@ -131,7 +134,8 @@ def get_all_models(driver, wait, brand):
 
 def get_all_types(driver, wait, brand, model):
     load_page(driver, wait)
-    select_brand(driver, wait, brand)
+    # select_brand(driver, wait, brand)
+    input_and_select_brand(driver, wait, brand)
     select_model(driver, wait, model["model_name"])
     type_input = wait.until(EC.element_to_be_clickable((By.ID, "TypeCode")))
     type_input.click()
@@ -155,8 +159,8 @@ def click_search_and_get_url(driver, wait, brand, model, type_data):
         select_brand(driver, wait, brand)
         # input_and_select_brand(driver, wait, brand)
 
-        select_model(driver, wait, model["model_name"])
-        # input_and_select_model(driver, wait, model)
+        # select_model(driver, wait, model["model_name"])
+        input_and_select_model(driver, wait, model)
 
         # select_type(driver, wait, type_data)
         input_and_select_type(driver, wait, type_data)
