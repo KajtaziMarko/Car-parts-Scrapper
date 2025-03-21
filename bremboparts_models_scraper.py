@@ -4,6 +4,7 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support.ui import Select, WebDriverWait
 import time
 
 URL = "https://www.bremboparts.com/europe/en"
@@ -21,6 +22,32 @@ def close_popup(driver, wait, section, t=10):
     close_button = WebDriverWait(driver, t).until(
         EC.element_to_be_clickable((By.CSS_SELECTOR, f"{section} button.close"))
     )
+    close_button.click()
+
+
+def change_region(driver, wait, region):
+    region_button = wait.until(
+        EC.element_to_be_clickable((By.CSS_SELECTOR, "div.item.action-menu > button"))
+    )
+    region_button.click()
+
+    language_selector = wait.until(
+        EC.visibility_of_element_located((By.ID, "LanguageSelector"))
+    )
+
+    # Step 3: Wait for the dropdown to be present and ensure options are loaded.
+    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div.country select.dropdown")))
+    wait.until(EC.presence_of_all_elements_located(
+        (By.XPATH, "//div[@class='country']//select[contains(@class, 'dropdown')]/option")
+    ))
+
+    # Step 4: Re-locate the dropdown and select Macedonia.
+    country_dropdown = driver.find_element(By.CSS_SELECTOR, "div.country select.dropdown")
+    select_country = Select(country_dropdown)
+    select_country.select_by_value(region)
+
+    # Step 5: Close the language selector.
+    close_button = language_selector.find_element(By.CSS_SELECTOR, "button.close")
     close_button.click()
 
 
@@ -62,8 +89,13 @@ def input_brand(driver, wait, brand):
     brand_input.clear()
     brand_input.send_keys(brand)
 
+
+
 def input_model(driver, wait, model_data):
     formatted_model = f"{model_data["model_name"]} {model_data['model_date']}"
+    if len(model_data["model_date"].split("-")) == 1:
+        formatted_model += " >"
+
     model_input = wait.until(EC.element_to_be_clickable((By.ID, "ModelCode")))
     model_input.click()
     model_input.clear()
@@ -71,10 +103,15 @@ def input_model(driver, wait, model_data):
 
 def input_type(driver, wait, type_data):
     formatted_type = f"{type_data['name']} ({type_data['kw']} kW/{type_data['cv']} CV) {type_data['date']}"
+    if len(type_data["date"].split("-")) == 1:
+        formatted_type += " >"
+
     type_input = wait.until(EC.element_to_be_clickable((By.ID, "TypeCode")))
     type_input.click()
     type_input.clear()
     type_input.send_keys(formatted_type)
+
+
 
 def input_and_select_brand(driver, wait, brand):
     input_brand(driver, wait, brand)
@@ -96,14 +133,16 @@ def get_all_brands(driver, wait):
     brand_container = wait.until(EC.visibility_of_element_located(
         (By.CSS_SELECTOR, 'div[data-type="brand"].white-exp.menu')
     ))
+    # Wait until the brand container has at least 10 brand elements
+    wait.until(lambda d: len(brand_container.find_elements(By.CSS_SELECTOR, "div.item.search-result span.voice")) > 10)
     brand_elements = brand_container.find_elements(By.CSS_SELECTOR, "div.item.search-result span.voice")
-    brands = [elem.text.strip() for elem in brand_elements if elem.text]
+    brands = [elem.text.strip() for elem in brand_elements if elem.text and elem.is_displayed() and elem.is_enabled()]
     return brands
+
 
 
 def get_all_models(driver, wait, brand):
     load_page(driver, wait)
-    # select_brand(driver, wait, brand)
     input_and_select_brand(driver, wait, brand)
     model_input = wait.until(EC.element_to_be_clickable((By.ID, "ModelCode")))
     model_input.click()
@@ -114,17 +153,16 @@ def get_all_models(driver, wait, brand):
     models = []
     seen = set()
     for elem in model_elements:
+        if not elem.is_displayed():
+            continue
         full_text = elem.text.strip()
         try:
-            # Extract the date from the inner span
-            date = elem.find_element(By.TAG_NAME, "span").text.strip()
+            date_elem = elem.find_element(By.TAG_NAME, "span")
+            date = date_elem.text.strip() if date_elem.is_displayed() else ""
         except Exception:
             date = ""
         # Remove the date from the full text to get the model name
-        if date and date in full_text:
-            name = full_text.replace(date, "").strip()
-        else:
-            name = full_text
+        name = full_text.replace(date, "").strip() if date and date in full_text else full_text
         identifier = (name, date)
         if identifier not in seen:
             seen.add(identifier)
@@ -132,32 +170,48 @@ def get_all_models(driver, wait, brand):
     return models
 
 
+
 def get_all_types(driver, wait, brand, model):
     load_page(driver, wait)
-    # select_brand(driver, wait, brand)
-    input_and_select_brand(driver, wait, brand)
-    select_model(driver, wait, model["model_name"])
-    type_input = wait.until(EC.element_to_be_clickable((By.ID, "TypeCode")))
-    type_input.click()
-    rows = wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.row.search-result")))
-    types = []
-    for row in rows:
-        type_name = row.find_element(By.CSS_SELECTOR, "span.col.type-name").text.strip()
-        kw = row.find_element(By.CSS_SELECTOR, "span.col.kw").text.strip()
-        cv = row.find_element(By.CSS_SELECTOR, "span.col.cv").text.strip()
-        date = row.find_element(By.CSS_SELECTOR, "span.col.date").text.strip()
-        formatted = {"name": type_name, "kw": kw, "cv": cv, "date": date}
-        types.append(formatted)
-    return types
+    try:
+        input_and_select_brand(driver, wait, brand)
+        input_and_select_model(driver, wait, model)
+    except Exception:
+        print("Get all Types: Failed to input and select brand or model")
+        try:
+            select_brand(driver, wait, brand)
+            select_model(driver, wait, model)
+        except Exception:
+            print("Get all Types: failed when selecting brand or model")
+            raise Exception
 
+    try:
+        type_input = wait.until(EC.element_to_be_clickable((By.ID, "TypeCode")))
+        type_input.click()
+        # Wait for all type rows
+        rows = wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.row.search-result")))
+        types = []
+        for row in rows:
+            if not row.is_displayed():
+                continue
+            type_name = row.find_element(By.CSS_SELECTOR, "span.col.type-name").text.strip()
+            kw = row.find_element(By.CSS_SELECTOR, "span.col.kw").text.strip()
+            cv = row.find_element(By.CSS_SELECTOR, "span.col.cv").text.strip()
+            date = row.find_element(By.CSS_SELECTOR, "span.col.date").text.strip()
+            formatted = {"name": type_name, "kw": kw, "cv": cv, "date": date}
+            types.append(formatted)
+        return types
+    except Exception as e:
+        print("Get all types failed when getting the types:", e)
+        raise Exception
 
 def click_search_and_get_url(driver, wait, brand, model, type_data):
     # First, try to use the select functions.
     try:
         load_page(driver, wait)
 
-        select_brand(driver, wait, brand)
-        # input_and_select_brand(driver, wait, brand)
+        # select_brand(driver, wait, brand)
+        input_and_select_brand(driver, wait, brand)
 
         # select_model(driver, wait, model["model_name"])
         input_and_select_model(driver, wait, model)
@@ -216,6 +270,7 @@ def main():
     # Get list of brands and close any modal popup if present
     brands = get_all_brands(driver, wait)
     close_popup(driver, wait, "div.modal.link.show", 40)
+    change_region(driver, wait, "MK")
 
     # Ensure Data folder exists; if it does, adjust checkpoint data.
     if not os.path.exists("Data"):
@@ -283,6 +338,7 @@ def main():
     else:
         next_type_id = 1
 
+    skipped_indexes = []
     # Process each brand, model, and type while saving each step immediately
     for brand in brands:
         brand_id = next_brand_id
@@ -302,7 +358,13 @@ def main():
             }
             append_to_csv("Data/models.csv", model_record)
 
-            types = get_all_types(driver, wait, brand, model)
+            try:
+                types = get_all_types(driver, wait, brand, model)
+            except Exception as e:
+                print(f" Skipping for Brand: {brand}, Model: {model}")
+                skipped_indexes.append(model_record["model_id"])
+                continue
+
             for type_data in types:
                 url = click_search_and_get_url(driver, wait, brand, model, type_data)
                 type_record = {
@@ -319,6 +381,7 @@ def main():
 
     print("Saved brands.csv, models.csv, and types.csv for the processed brands.")
     driver.quit()
+    print(skipped_indexes)
 
 
 if __name__ == "__main__":
