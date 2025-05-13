@@ -1,388 +1,224 @@
 import os
-import pandas as pd
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support.ui import Select, WebDriverWait
-import time
+import csv
+import re
+import requests
+from functools import lru_cache
 
-URL = "https://www.bremboparts.com/europe/en"
-
-
-def load_page(driver, wait):
-    driver.get(URL)
-    # Wait until the BrandCode element is present
-    wait.until(EC.presence_of_element_located((By.ID, "BrandCode")))
-    # time.sleep(2)
+from numpy.matlib import empty
+from requests.adapters import HTTPAdapter
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from apify_shared.utils import json_dumps
 
 
-def close_popup(driver, wait, section, t=10):
-    # Wait until the close button is clickable in the given section and click it
-    close_button = WebDriverWait(driver, t).until(
-        EC.element_to_be_clickable((By.CSS_SELECTOR, f"{section} button.close"))
-    )
-    close_button.click()
+class BremboAPIClient:
+    """
+    HTTP client for interacting with the Brembo catalogue API.
+    Handles session, CSRF token, and regional settings.
 
+    Falls back to loading a local HTML file if network is unavailable.
+    """
+    def __init__(self, base_url: str, region: str, culture: str, country: str, offline_html: str = None):
+        self.base_url = f"{base_url.rstrip('/')}/{region}/{culture}"
+        self.session = requests.Session()
+        # increase connection pool for performance
+        adapter = HTTPAdapter(pool_connections=50, pool_maxsize=50)
+        self.session.mount('https://', adapter)
+        self.offline_html = offline_html
+        self.session.cookies.set(name="cnt", value=country, domain="www.bremboparts.com", path="/")
+        self._initialize_session()
 
-def change_region(driver, wait, region):
-    region_button = wait.until(
-        EC.element_to_be_clickable((By.CSS_SELECTOR, "div.item.action-menu > button"))
-    )
-    region_button.click()
-
-    language_selector = wait.until(
-        EC.visibility_of_element_located((By.ID, "LanguageSelector"))
-    )
-
-    # Step 3: Wait for the dropdown to be present and ensure options are loaded.
-    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div.country select.dropdown")))
-    wait.until(EC.presence_of_all_elements_located(
-        (By.XPATH, "//div[@class='country']//select[contains(@class, 'dropdown')]/option")
-    ))
-
-    # Step 4: Re-locate the dropdown and select Macedonia.
-    country_dropdown = driver.find_element(By.CSS_SELECTOR, "div.country select.dropdown")
-    select_country = Select(country_dropdown)
-    select_country.select_by_value(region)
-
-    # Step 5: Close the language selector.
-    close_button = language_selector.find_element(By.CSS_SELECTOR, "button.close")
-    close_button.click()
-
-
-def select_brand(driver, wait, brand):
-    brand_input = wait.until(EC.element_to_be_clickable((By.ID, "BrandCode")))
-    brand_input.click()
-    xpath = f"//div[@class='item search-result']/span[text()='{brand}']"
-    brand_elem = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
-    brand_elem.click()
-
-
-def select_model(driver, wait, model_data):
-    model_input = wait.until(EC.element_to_be_clickable((By.ID, "ModelCode")))
-    model_input.click()
-    # Use a contains xpath to match the model name
-    xpath = f"//div[@class='item search-result']/span[contains(., '{model_data["model_name"]}')]"
-    model_elem = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
-    model_elem.click()
-
-
-def select_type(driver, wait, type_data):
-    type_input = wait.until(EC.element_to_be_clickable((By.ID, "TypeCode")))
-    type_input.click()
-    # Use the engine displacement (first part of the name) for matching
-    engine = type_data["name"].split()[0]
-    xpath = (
-        f"//div[contains(@class, 'row search-result') and "
-        f".//span[contains(@class, 'type-name') and starts-with(normalize-space(text()), '{engine}')] and "
-        f".//span[contains(@class, 'kw') and contains(normalize-space(text()), '{type_data['kw']}')] and "
-        f".//span[contains(@class, 'cv') and contains(normalize-space(text()), '{type_data['cv']}')] and "
-        f".//span[contains(@class, 'date') and contains(normalize-space(text()), '{type_data['date']}')]]"
-    )
-    type_elem = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
-    type_elem.click()
-
-def input_brand(driver, wait, brand):
-    brand_input = wait.until(EC.element_to_be_clickable((By.ID, "BrandCode")))
-    brand_input.click()
-    brand_input.clear()
-    brand_input.send_keys(brand)
-
-
-
-def input_model(driver, wait, model_data):
-    formatted_model = f"{model_data["model_name"]} {model_data['model_date']}"
-    if len(model_data["model_date"].split("-")) == 1:
-        formatted_model += " >"
-
-    model_input = wait.until(EC.element_to_be_clickable((By.ID, "ModelCode")))
-    model_input.click()
-    model_input.clear()
-    model_input.send_keys(formatted_model)
-
-def input_type(driver, wait, type_data):
-    formatted_type = f"{type_data['name']} ({type_data['kw']} kW/{type_data['cv']} CV) {type_data['date']}"
-    if len(type_data["date"].split("-")) == 1:
-        formatted_type += " >"
-
-    type_input = wait.until(EC.element_to_be_clickable((By.ID, "TypeCode")))
-    type_input.click()
-    type_input.clear()
-    type_input.send_keys(formatted_type)
-
-
-
-def input_and_select_brand(driver, wait, brand):
-    input_brand(driver, wait, brand)
-    select_brand(driver, wait, brand)
-
-def input_and_select_model(driver, wait, model_data):
-    input_model(driver, wait, model_data)
-    select_model(driver, wait, model_data)
-
-def input_and_select_type(driver, wait, type_data):
-    input_type(driver, wait, type_data)
-    select_type(driver, wait, type_data)
-
-
-def get_all_brands(driver, wait):
-    load_page(driver, wait)
-    brand_input = wait.until(EC.element_to_be_clickable((By.ID, "BrandCode")))
-    brand_input.click()
-    brand_container = wait.until(EC.visibility_of_element_located(
-        (By.CSS_SELECTOR, 'div[data-type="brand"].white-exp.menu')
-    ))
-    # Wait until the brand container has at least 10 brand elements
-    wait.until(lambda d: len(brand_container.find_elements(By.CSS_SELECTOR, "div.item.search-result span.voice")) > 10)
-    brand_elements = brand_container.find_elements(By.CSS_SELECTOR, "div.item.search-result span.voice")
-    brands = [elem.text.strip() for elem in brand_elements if elem.text and elem.is_displayed() and elem.is_enabled()]
-    return brands
-
-
-
-def get_all_models(driver, wait, brand):
-    load_page(driver, wait)
-    input_and_select_brand(driver, wait, brand)
-    model_input = wait.until(EC.element_to_be_clickable((By.ID, "ModelCode")))
-    model_input.click()
-    model_container = wait.until(EC.visibility_of_element_located(
-        (By.CSS_SELECTOR, 'div[data-type="model"].white-exp.menu')
-    ))
-    model_elements = model_container.find_elements(By.CSS_SELECTOR, "div.item.search-result span.voice")
-    models = []
-    seen = set()
-    for elem in model_elements:
-        if not elem.is_displayed():
-            continue
-        full_text = elem.text.strip()
+    def _initialize_session(self):
+        html = None
         try:
-            date_elem = elem.find_element(By.TAG_NAME, "span")
-            date = date_elem.text.strip() if date_elem.is_displayed() else ""
+            resp = self.session.get(self.base_url, timeout=10)
+            resp.raise_for_status()
+            html = resp.text
+        except requests.RequestException:
+            if not self.offline_html:
+                raise RuntimeError("Cannot fetch home page and no offline HTML provided.")
+            with open(self.offline_html, 'r', encoding='utf-8') as f:
+                html = f.read()
+        match = re.search(r'<input name="__RequestVerificationToken"[^>]*value="([^"]+)"', html)
+        if not match:
+            raise RuntimeError("CSRF token not found in HTML.")
+        token = match.group(1)
+        self.session.headers.update({
+            'Accept': 'application/json, text/javascript, */*; q=0.01',
+            'Content-Type': 'application/json; charset=UTF-8',
+            'X-Requested-With': 'XMLHttpRequest',
+            'RequestVerificationToken': token,
+            'Referer': self.base_url,
+        })
+
+    def post_json(self, endpoint: str, payload: dict):
+        url = self.base_url + endpoint
+        resp = self.session.post(url, json=payload, timeout=10)
+        resp.raise_for_status()
+        return resp.json()
+
+
+class VehicleService:
+    """
+    Service for fetching brands, models, types, displacements, years, and product URLs.
+    """
+    ENDPOINTS = {
+        'brands':      '/search/getsearchbrands',
+        'models':      '/search/getsearchmodels',
+        'types':       '/catalogue/search/getsearchtypes',
+        'displacement':'/catalogue-bike/search/getsearchccms',
+        'year':        '/catalogue-bike/search/getsearchyears',
+        'search':      '/search/searchtype'
+    }
+
+    def __init__(self, client: BremboAPIClient):
+        self.client = client
+
+    @lru_cache(maxsize=None)
+    def fetch_brands(self, vehicle: str) -> list:
+        prefix = '/catalogue-bike' if vehicle == 'Bike' else '/catalogue'
+        return self.client.post_json(prefix + self.ENDPOINTS['brands'], {'vehicleType': vehicle})
+
+    @lru_cache(maxsize=None)
+    def fetch_models(self, vehicle: str, brand_key: str) -> tuple:
+        prefix = '/catalogue-bike' if vehicle == 'Bike' else '/catalogue'
+        body = {'vehicleType': vehicle, 'modelYear': None}
+        if vehicle == 'Bike':
+            body['brandName'] = brand_key
+        else:
+            body['brandCode'] = brand_key
+        return tuple(self.client.post_json(prefix + self.ENDPOINTS['models'], body))
+
+    @lru_cache(maxsize=None)
+    def fetch_types(self, model_code: str) -> tuple:
+        return tuple(self.client.post_json(self.ENDPOINTS['types'], {'modelCode': model_code}))
+
+    def fetch_displacement(self, brand_name: str, model_name: str, type_name: str) -> list:
+        return self.client.post_json(
+            self.ENDPOINTS['displacement'],
+            {'brandName': brand_name, 'modelName': model_name, 'typeName': type_name}
+        )
+
+    @lru_cache(maxsize=None)
+    def fetch_year(self, type_code: str) -> tuple:
+        if not type_code:
+            return ()
+        return tuple(self.client.post_json(self.ENDPOINTS['year'], {'typeCode': type_code}))
+
+    def fetch_product_url(self, vehicle: str, **kwargs) -> dict:
+        prefix = '/catalogue-bike' if vehicle == 'Bike' else '/catalogue'
+        try:
+            return self.client.post_json(prefix + self.ENDPOINTS['search'], kwargs)
         except Exception:
-            date = ""
-        # Remove the date from the full text to get the model name
-        name = full_text.replace(date, "").strip() if date and date in full_text else full_text
-        identifier = (name, date)
-        if identifier not in seen:
-            seen.add(identifier)
-            models.append({"model_name": name, "model_date": date})
-    return models
+            return {'url': ''}
 
 
-
-def get_all_types(driver, wait, brand, model):
-    load_page(driver, wait)
-    try:
-        input_and_select_brand(driver, wait, brand)
-        input_and_select_model(driver, wait, model)
-    except Exception:
-        print("Get all Types: Failed to input and select brand or model")
-        try:
-            select_brand(driver, wait, brand)
-            select_model(driver, wait, model)
-        except Exception:
-            print("Get all Types: failed when selecting brand or model")
-            raise Exception
-
-    try:
-        type_input = wait.until(EC.element_to_be_clickable((By.ID, "TypeCode")))
-        type_input.click()
-        # Wait for all type rows
-        rows = wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.row.search-result")))
-        types = []
-        for row in rows:
-            if not row.is_displayed():
-                continue
-            type_name = row.find_element(By.CSS_SELECTOR, "span.col.type-name").text.strip()
-            kw = row.find_element(By.CSS_SELECTOR, "span.col.kw").text.strip()
-            cv = row.find_element(By.CSS_SELECTOR, "span.col.cv").text.strip()
-            date = row.find_element(By.CSS_SELECTOR, "span.col.date").text.strip()
-            formatted = {"name": type_name, "kw": kw, "cv": cv, "date": date}
-            types.append(formatted)
-        return types
-    except Exception as e:
-        print("Get all types failed when getting the types:", e)
-        raise Exception
-
-def click_search_and_get_url(driver, wait, brand, model, type_data):
-    # First, try to use the select functions.
-    try:
-        load_page(driver, wait)
-
-        # select_brand(driver, wait, brand)
-        input_and_select_brand(driver, wait, brand)
-
-        # select_model(driver, wait, model["model_name"])
-        input_and_select_model(driver, wait, model)
-
-        # select_type(driver, wait, type_data)
-        input_and_select_type(driver, wait, type_data)
-    except Exception as select_exception:
-        print("Select functions failed, trying input functions:", select_exception)
-        # If the select approach fails, try the input functions.
-        try:
-            load_page(driver, wait)
-            input_brand(driver, wait, brand)
-            input_model(driver, wait, model)
-            input_type(driver, wait, type_data)
-        except Exception as input_exception:
-            print("Input functions also failed:", input_exception)
-            print("Brand:", brand, "Model:", model, "Type:", type_data)
-            return ""
-
-    # After successfully setting the values, click the search button.
-    try:
-        current_url = driver.current_url
-        search_button = wait.until(EC.element_to_be_clickable((By.ID, "SubmitType")))
-        search_button.click()
-        wait.until(EC.url_changes(current_url))
-        return driver.current_url
-    except Exception as e:
-        print("Error clicking search or waiting for URL change:", e)
-        print("Brand:", brand, "Model:", model, "Type:", type_data)
-        return ""
-
-
-def append_to_csv(file_name, row):
-    """Appends a single row (a dict) to a CSV file. Writes header if file does not exist."""
-    file_exists = os.path.exists(file_name)
-    mode = 'a' if file_exists else 'w'
-    df = pd.DataFrame([row])
-    df.to_csv(file_name, mode=mode, index=False, header=not file_exists)
+def save_all_csvs(brands, models, types, displacements, years, out_dir='Data'):
+    os.makedirs(out_dir, exist_ok=True)
+    def write_csv(fname, hdrs, rows):
+        with open(os.path.join(out_dir, fname), 'w', newline='', encoding='utf-8') as f:
+            w = csv.writer(f)
+            w.writerow(hdrs)
+            w.writerows(rows)
+    write_csv('brand.csv', ['brand_id','brand_name','brembo_brand_code','vehicle_type'], brands)
+    write_csv('model.csv', ['model_id','brand_id','brembo_model_code','model_name','date_start','date_end'], models)
+    write_csv('type.csv', ['type_id','model_id','type_name','brembo_type_code','date_start','date_end','kw','cv','product_url'], types)
+    write_csv('bikeDisplacement.csv', ['disp_id','model_id','title','value','brembo_disp_code','product_url'], displacements)
+    write_csv('bikeYear.csv', ['year_id','disp_id','year_value'], years)
 
 
 def main():
-    options = webdriver.ChromeOptions()
-    # Uncomment the following line to run in headless mode:
-    # options.add_argument("--headless")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    driver = webdriver.Chrome(options=options)
-    wait = WebDriverWait(driver, 10)
+    base_url = 'https://www.bremboparts.com'
+    region = 'europe'
+    culture = 'en'
+    country = 'MK'
+    vehicle_types = [('Car', 1), ('Truck', 2), ('Bike', 3)]
 
-    # Load the initial page and close popups
-    load_page(driver, wait)
-    close_popup(driver, wait, "div.cookie-toast")
-    close_popup(driver, wait, "div.wrapper")
+    client  = BremboAPIClient(base_url, region, culture, country)
+    service = VehicleService(client)
 
-    # Get list of brands and close any modal popup if present
-    brands = get_all_brands(driver, wait)
-    close_popup(driver, wait, "div.modal.link.show", 40)
-    change_region(driver, wait, "MK")
+    brands_data, models_data, types_data, disp_data, year_data = [],[],[],[],[]
+    todos = []  # collect URL jobs
+    b_id = m_id = t_id = d_id = y_id = 1
 
-    # Ensure Data folder exists; if it does, adjust checkpoint data.
-    if not os.path.exists("Data"):
-        os.makedirs("Data")
-    else:
-        if os.path.exists("Data/brands.csv"):
-            brands_csv = pd.read_csv("Data/brands.csv")
-            if not brands_csv.empty:
-                last_brand = brands_csv.iloc[-1]["brand_name"]
-                # Remove rows in models and types that belong to the last brand.
-                if os.path.exists("Data/models.csv"):
-                    models_df = pd.read_csv("Data/models.csv")
-                    # Get the last brand's id from brands.csv
-                    last_brand_row = brands_csv[brands_csv["brand_name"] == last_brand]
-                    if not last_brand_row.empty:
-                        last_brand_id = last_brand_row.iloc[-1]["brand_id"]
-                        # Find model_ids for rows that belong to the last brand.
-                        models_to_remove = models_df[models_df["brand_id"] == last_brand_id]
-                        model_ids_to_remove = models_to_remove["model_id"].tolist()
-                        # Remove these rows and update models.csv
-                        models_df = models_df[models_df["brand_id"] != last_brand_id]
-                        models_df.to_csv("Data/models.csv", index=False)
-                        # Now remove rows in types.csv whose model_id is in the removed list.
-                        if os.path.exists("Data/types.csv"):
-                            types_df = pd.read_csv("Data/types.csv")
-                            types_df = types_df[~types_df["model_id"].isin(model_ids_to_remove)]
-                            types_df.to_csv("Data/types.csv", index=False)
+    # first gather all static data
+    for vehicle,_ in vehicle_types:
+        for b in service.fetch_brands(vehicle):
+            brand_name = b.get('brandName') or b.get('title') or ''
+            brand_code = b.get('brandCode') or brand_name
+            brands_data.append((b_id, brand_name, brand_code, vehicle))
 
-                # Remove the last brand from the csv
-                brands_csv = brands_csv[brands_csv["brand_name"] != last_brand]
-                brands_csv.to_csv("Data/brands.csv", index=False)
+            for m in service.fetch_models(vehicle, brand_code if vehicle!='Bike' else brand_name):
+                model_code = m.get('modelCode') or m.get('value') or m.get('title','')
+                model_name = m.get('modelName') or m.get('title') or ''
+                start = m.get('modelDateStart')
+                end   = m.get('modelDateEnd')
+                models_data.append((m_id, b_id, model_code, model_name, start, end))
 
-                # Adjust the brands list to resume from the last processed brand.
-                try:
-                    index = brands.index(last_brand)
-                    brands = brands[index:]
-                except ValueError as e:
-                    print(e)
+                if vehicle=='Bike':
+                    type_name = m.get('typeName') or model_name
+                    disps = service.fetch_displacement(brand_name, m.get('modelName') or '', m.get('typeName') or '')
+                    for d in disps:
+                        d_code = d.get('typeCode') or ''
+                        if not d_code: continue
+                        d_title = d.get('title')
+                        d_val   = d.get('value')
 
-    # Initialize ID counters based on existing CSV files.
-    if os.path.exists("Data/brands.csv"):
-        brands_df = pd.read_csv("Data/brands.csv")
-        if not brands_df.empty:
-            next_brand_id = int(brands_df["brand_id"].max()) + 1
-        else:
-            next_brand_id = 1
-    else:
-        next_brand_id = 1
+                        try:
+                            years = service.fetch_year(d_code)
+                        except requests.HTTPError as e:
+                            print(f"[WARN] skipping years for {brand_name, model_name!r}: {e}")
+                            years = ()
+                        for y in years:
+                            y_val = y.get('value')
+                            year_data.append((y_id, d_id, y_val))
+                            y_id+=1
 
-    if os.path.exists("Data/models.csv"):
-        models_df = pd.read_csv("Data/models.csv")
-        if not models_df.empty:
-            next_model_id = int(models_df["model_id"].max()) + 1
-        else:
-            next_model_id = 1
-    else:
-        next_model_id = 1
+                        try:
+                            years[-1].get('value')
+                        except:
+                            continue
 
-    if os.path.exists("Data/types.csv"):
-        types_df = pd.read_csv("Data/types.csv")
-        if not types_df.empty:
-            next_type_id = int(types_df["type_id"].max()) + 1
-        else:
-            next_type_id = 1
-    else:
-        next_type_id = 1
+                        disp_data.append((d_id, m_id, d_title, d_val, d_code, ''))
+                        todos.append((
+                            vehicle,
+                            {'brandName': brand_name,
+                             'modelName': m.get('modelName') or '',
+                             'typeName':  m.get('typeName') or '',
+                             'ccm': d_val,
+                             'typeCode': d_code,
+                             'year': years[-1].get('value'),
+                             'productTypes': ['All'],
+                             'out': ('disp',d_id)}
+                        ))
+                        d_id+=1
 
-    skipped_indexes = []
-    # Process each brand, model, and type while saving each step immediately
-    for brand in brands:
-        brand_id = next_brand_id
-        next_brand_id += 1
-        brand_record = {"brand_id": brand_id, "brand_name": brand}
-        append_to_csv("Data/brands.csv", brand_record)
+                else:
+                    for t in service.fetch_types(model_code):
+                        t_code = t.get('typeCode') or t.get('value') or ''
+                        if not t_code: continue
+                        t_name = t.get('typeName') or t.get('title') or ''
+                        t_start= t.get('typeDateStart'); t_end=t.get('typeDateEnd'); t_kw=t.get('kw'); t_cv=t.get('cv')
+                        types_data.append((t_id, m_id, t_name, t_code, t_start, t_end, t_kw, t_cv, '')); todos.append((vehicle, {'brandCode':brand_code,'modelCode':model_code,'typeCode':t_code,'productTypes':['All'],'out':('type',t_id)})); t_id+=1
+                m_id+=1
+            b_id+=1
+            print("Done with: ", brand_name, vehicle)
 
-        models = get_all_models(driver, wait, brand)
-        for model in models:
-            current_model_id = next_model_id
-            next_model_id += 1
-            model_record = {
-                "model_id": current_model_id,
-                "brand_id": brand_id,
-                "model_name": model["model_name"],
-                "model_date": model["model_date"]
-            }
-            append_to_csv("Data/models.csv", model_record)
+    # parallel fetch URLs
+    def job(item):
+        vehicle, payload = item
+        out_type, out_id = payload.pop('out')
+        res = service.fetch_product_url(vehicle, **payload) if vehicle!='Bike' else service.fetch_product_url(vehicle, **payload)
 
-            try:
-                types = get_all_types(driver, wait, brand, model)
-            except Exception as e:
-                print(f" Skipping for Brand: {brand}, Model: {model}")
-                skipped_indexes.append(model_record["model_id"])
-                continue
+        # print(f"[DEBUG] payload={payload!r} → url={res.get('url','')!r}")
+        return (out_type, out_id, res.get('url',''))
 
-            for type_data in types:
-                url = click_search_and_get_url(driver, wait, brand, model, type_data)
-                type_record = {
-                    "type_id": next_type_id,
-                    "model_id": current_model_id,
-                    "type_name": type_data["name"],
-                    "kw": type_data["kw"],
-                    "cv": type_data["cv"],
-                    "date": type_data["date"],
-                    "url": url
-                }
-                append_to_csv("Data/types.csv", type_record)
-                next_type_id += 1
+    with ThreadPoolExecutor(max_workers=20) as pool:
+        for out_type,out_id,url in pool.map(job, todos):
+            if out_type=='type': types_data[out_id-1] = types_data[out_id-1][:-1] + (url,)
+            else: disp_data[out_id-1] = disp_data[out_id-1][:-1] + (url,)
 
-    print("Saved brands.csv, models.csv, and types.csv for the processed brands.")
-    driver.quit()
-    print(skipped_indexes)
+    save_all_csvs(brands_data, models_data, types_data, disp_data, year_data)
+    print(f"Done: {len(brands_data)} brands, {len(models_data)} models, {len(types_data)} types, {len(disp_data)} disp, {len(year_data)} years")
 
-
-if __name__ == "__main__":
+if __name__=='__main__':
     main()
