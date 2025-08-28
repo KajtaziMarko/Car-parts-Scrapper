@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from urllib.parse import urljoin
 
 import pandas as pd
@@ -30,23 +31,27 @@ mapped_titles = {
     'Caliper': 'caliper',
     'LCV caliper bracket': 'lcvbracket',
     'Clutch pipes': 'hydraulic',
+    'Brake Master Cylinders': 'brakemastercylinder',
+    'Clutch Master Cylinders': 'clutchmastercylinder'
 }
 
 
-def get_url(code, title):
-    base_url = "https://www.bremboparts.com/europe/en/catalogue"
-    url = f"{base_url}/{mapped_titles.get(title, 'unknown')}/{code.replace(' ', '_')}"
+def get_url(code, title, type):
+    base_url_vehicles = "https://www.bremboparts.com/europe/en/catalogue"
+    base_url_bikes = "https://www.bremboparts.com/europe/en/catalogue-bike"
+
+    if type == 0:
+        url = f"{base_url_vehicles}/{mapped_titles.get(title, 'unknown')}/{code.replace(' ', '_')}"
+    else:
+        url = f"{base_url_bikes}/{mapped_titles.get(title, 'unknown')}/{code.replace(' ', '_')}"
     return url
 
-def save_unique_products(input_csv: str):
+def save_unique_products(input_csv: str, type):
     df = pd.read_csv(input_csv)
-
-    if df.size < 826000:
-        return
 
     df_unique = df.drop_duplicates(subset='code').reset_index(drop=True)
     df_unique['product_id'] = df_unique.index + 1
-    df_unique['url'] = df_unique.apply(lambda row: get_url(row['code'], row['title']), axis=1)
+    df_unique['url'] = df_unique.apply(lambda row: get_url(row['code'], row['title'], type), axis=1)
 
     out_df = df_unique[['product_id', 'code', 'title', 'url',]]
     return out_df
@@ -144,17 +149,129 @@ def scrape_all_products_by_type(input_dataframe, output_csv: str, product_type: 
         combined = combined.sort_values("product_id", ignore_index=True)
         cols = ["product_id", "code"] + [c for c in combined.columns if c not in ("product_id", "code")]
         combined = combined[cols]
+        combined = refactor_csv_columns(combined)
         combined.to_csv(output_csv, index=False)
         return combined
     else:
         return pd.DataFrame()
 
 
+def refactor_csv_columns(df):
+    """
+    Rename a DataFrame's columns using a CSV->model-field map.
+    - Case-insensitive, whitespace-normalized, accent-insensitive matching.
+    - Leaves unmapped columns as-is.
+    - Ensures unique target names (appends __dupN if needed).
+    """
+    import re
+    import unicodedata
+
+    CSV_TO_MODEL_FIELD = {
+        # Core product fields
+        "code": "code",
+        "EAN code": "ean",
+        "image_url": "image_url",
+        "technical_image_url": "technical_image_url",
+        "Type": "type_label",
+        "type": "type_label",
+
+        # Disc / Shoe / Kit style fields
+        "Diameter": "diameter_mm",
+        "Diameter Ø": "diameter_mm",
+        "Max diameter": "diameter_mm",
+        "Thickness": "thickness_mm",
+        "Thickness (TH)": "thickness_th_mm",
+        "Min. thickness": "min_thickness_mm",
+        "Height": "height_mm",
+        "Height (A)": "height_mm",
+        "Number of holes": "num_holes",
+        "Number of holes (C)": "num_holes",
+        "Disc type": "disc_type",
+        "Brake disc type": "disc_type",
+        "Centering": "center_bore_mm",
+        "Centering (B)": "center_bore_mm",
+        "Tightening torque": "tightening_torque",
+        "Units per box": "units_per_box",
+
+        # Pad fields
+        "Width": "width_mm",
+        "Braking system": "braking_system",
+        "WVA number": "wva_number",
+        "Wear indicator": "wear_indicator",
+        "Accessories": "accessories",
+        "FMSI": "fmsi",
+
+        # Pad accessory / generic assembly
+        "Type of assembly": "assembly_side",
+
+        # Hose
+        "Length": "length_mm",
+        "Threading": "threading",
+        "Threading 1": "threading_1",
+        "Threading 2": "threading_2",
+
+        # Cylinder (wheel, master, clutch…)
+        "Master cylinder diameter": "master_cylinder_diameter_mm",
+        "Material": "material",
+
+        # Caliper
+        "Number of pistons": "num_pistons",
+        "Caliper pistons": "num_pistons",
+        "Position": "position",
+        "Caliper type": "type_label",
+
+        # Shoe / ShoeKit
+        "Parking brake lever": "has_handbrake_lever",
+        "Brake proportioning valve": "is_manual_proportioning_valve",
+
+        # Kit
+        "Brake discs per box": "disc_per_box",
+        "Brake pads per box": "pad_per_box",
+
+        # Generic axle/assembly
+        "Axle": "axle",
+        "Assembly side": "assembly_side",
+
+        # Vehicle fitment
+        "product_id": "product_id",
+    }
+
+    def _norm(s: str) -> str:
+        s = str(s).strip()
+        s = unicodedata.normalize("NFKD", s)
+        s = "".join(c for c in s if not unicodedata.combining(c))
+        s = re.sub(r"\s+", " ", s)
+        return s.casefold()
+
+    norm_map = {_norm(k): v for k, v in CSV_TO_MODEL_FIELD.items()}
+
+    new_cols = []
+    seen = {}
+    for col in df.columns:
+        target = norm_map.get(_norm(col), col)  # default: keep original
+        count = seen.get(target, 0) + 1
+        seen[target] = count
+        if count > 1:
+            target = f"{target}__dup{count}"
+        new_cols.append(target)
+
+    new_df = df.copy()
+    new_df.columns = new_cols
+    return new_df
+
+
 def main():
-    products_df = save_unique_products("Data/Products/product-relations.csv")
+    products_df = save_unique_products("Data/Products/product-relations.csv", 0)
     for title in list(mapped_titles.keys()):
         file_name = f"{title.lower().replace(" ", "_")}.csv"
-        scrape_all_products_by_type(products_df, f"Data/Products/{file_name}", title)
+        scrape_all_products_by_type(products_df, f"Data/Products/Vehicle/{file_name}", title)
+
+    bike_products_df = save_unique_products("Data/Products/bike-product-relations.csv", 1)
+    for title in list(mapped_titles.keys()):
+        file_name = f"{title.lower().replace(" ", "_")}.csv"
+        scrape_all_products_by_type(bike_products_df, f"Data/Products/Bike/bike_{file_name}", title)
+
+
 
 if __name__ == '__main__':
     main()
